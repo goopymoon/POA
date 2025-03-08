@@ -1,0 +1,122 @@
+//@version=6
+strategy('Machine Learning Adaptive SuperTrend [AlgoAlpha]', 'AlgoAlpha - 🤖 Adaptive SuperTrend', overlay = true, max_labels_count = 500)
+
+// Supertrend parameters
+atr_len = input.int(10, 'ATR Length', group = 'SuperTrend Settings')
+fact = input.float(3, 'SuperTrend Factor', group = 'SuperTrend Settings')
+
+// K-means parameters
+training_data_period = input.int(100, 'Training Data Length', group = 'K-Means Settings')
+highvol = input.float(0.75, 'Initial High volatility Percentile Guess', maxval = 1, group = 'K-Means Settings')
+midvol = input.float(0.5, 'Initial Medium volatility Percentile Guess', maxval = 1, group = 'K-Means Settings')
+lowvol = input.float(0.25, 'Initial Low volatility Percentile Guess', maxval = 1, group = 'K-Means Settings')
+
+// Supertrend Function
+pine_supertrend(factor, atr) =>
+    src = hl2
+    upperBand = src + factor * atr
+    lowerBand = src - factor * atr
+    prevLowerBand = nz(lowerBand[1])
+    prevUpperBand = nz(upperBand[1])
+
+    lowerBand := lowerBand > prevLowerBand or close[1] < prevLowerBand ? lowerBand : prevLowerBand
+    upperBand := upperBand < prevUpperBand or close[1] > prevUpperBand ? upperBand : prevUpperBand
+    int _direction = na
+    float superTrend = na
+    prevSuperTrend = superTrend[1]
+    if na(atr[1])
+        _direction := 1
+        _direction
+    else if prevSuperTrend == prevUpperBand
+        _direction := close > upperBand ? -1 : 1
+        _direction
+    else
+        _direction := close < lowerBand ? 1 : -1
+        _direction
+    superTrend := _direction == -1 ? lowerBand : upperBand
+    [superTrend, _direction]
+
+// Volatility Calculation
+volatility = ta.atr(atr_len)
+upper = ta.highest(volatility, training_data_period)
+lower = ta.lowest(volatility, training_data_period)
+
+// K-means logic
+high_volatility = lower + (upper - lower) * highvol
+medium_volatility = lower + (upper - lower) * midvol
+low_volatility = lower + (upper - lower) * lowvol
+
+// Cluster Assignment
+iterations = 0
+size_a = 0
+size_b = 0
+size_c = 0
+
+hv = array.new_float()
+mv = array.new_float()
+lv = array.new_float()
+amean = array.new_float(1, high_volatility)
+bmean = array.new_float(1, medium_volatility)
+cmean = array.new_float(1, low_volatility)
+
+if nz(volatility) > 0 and bar_index >= training_data_period - 1
+    while (amean.size() == 1 ? true : amean.first() != amean.get(1)) or (bmean.size() == 1 ? true : bmean.first() != bmean.get(1)) or (cmean.size() == 1 ? true : cmean.first() != cmean.get(1))
+        hv.clear()
+        mv.clear()
+        lv.clear()
+        for i = training_data_period - 1 to 0 by 1
+            _1 = math.abs(volatility[i] - amean.first())
+            _2 = math.abs(volatility[i] - bmean.first())
+            _3 = math.abs(volatility[i] - cmean.first())
+            if _1 < _2 and _1 < _3
+                hv.unshift(volatility[i])
+
+            if _2 < _1 and _2 < _3
+                mv.unshift(volatility[i])
+
+            if _3 < _1 and _3 < _2
+                lv.unshift(volatility[i])
+
+        amean.unshift(hv.avg())
+        bmean.unshift(mv.avg())
+        cmean.unshift(lv.avg())
+        size_a := hv.size()
+        size_b := mv.size()
+        size_c := lv.size()
+        iterations := iterations + 1
+
+// Assign Cluster
+hv_new = amean.first()
+mv_new = bmean.first()
+lv_new = cmean.first()
+vdist_a = math.abs(volatility - hv_new)
+vdist_b = math.abs(volatility - mv_new)
+vdist_c = math.abs(volatility - lv_new)
+
+distances = array.new_float()
+centroids = array.new_float()
+
+distances.push(vdist_a)
+distances.push(vdist_b)
+distances.push(vdist_c)
+
+centroids.push(hv_new)
+centroids.push(mv_new)
+centroids.push(lv_new)
+
+cluster = distances.indexof(distances.min()) // 0 for high, 1 for medium, 2 for low
+assigned_centroid = cluster == -1 ? na : centroids.get(cluster)
+
+// Get Supertrend and Direction
+[ST, dir] = pine_supertrend(fact, assigned_centroid)
+
+// Entry and Exit Logic
+if ta.crossover(dir, 0)
+    strategy.entry("Sell", strategy.short)
+
+if ta.crossunder(dir, 0)
+    strategy.entry("Buy", strategy.long)
+
+// You can also add stop-loss and take-profit levels if necessary
+// Example: strategy.exit("Exit Long", "Buy", stop = stop_loss, limit = take_profit)
+
